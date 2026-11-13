@@ -27,7 +27,7 @@ Setting 1, Actions on, only the allowed list, SHA pinning required:
 gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true
 ```
 
-Setting 2, the allowed list is exactly the five pinned actions, nothing GitHub-owned or Marketplace-verified by default (the list must equal the `uses:` lines and `PINS.md`; `patterns_allowed` applies to public repositories, per the same docs page):
+Setting 2, the allowed list is exactly the four pinned actions, nothing GitHub-owned or Marketplace-verified by default (the list must equal the `uses:` lines and `PINS.md`; `patterns_allowed` applies to public repositories, per the same docs page). The retained payload is updated locally; the Captain must apply the live allow-list change later. No agent runs that owner step here.
 
 ```
 gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-actions --input - <<'JSON'
@@ -38,8 +38,7 @@ gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-acti
     "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
-    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
-    "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"
+    "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
   ]
 }
 JSON
@@ -83,7 +82,7 @@ Each command prints `true` when the setting holds.
 ```
 gh api repos/EYYCHEEV/stronk-omp-builds --jq '[.private, .has_issues, .has_wiki, .has_projects, .has_pull_requests, .default_branch] == [false,false,false,false,false,"main"]'
 gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions --jq '[.enabled, .allowed_actions, .sha_pinning_required] == [true,"selected",true]'
-gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-actions --jq '[.github_owned_allowed, .verified_allowed, (.patterns_allowed | sort)] == [false,false,["actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6","actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1","actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333","actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9","oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"]]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-actions --jq '[.github_owned_allowed, .verified_allowed, (.patterns_allowed | sort)] == [false,false,["actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6","actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1","actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333","actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"]]'
 gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/workflow --jq '[.default_workflow_permissions, .can_approve_pull_request_reviews] == ["read", false]'
 gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/fork-pr-contributor-approval --jq '.approval_policy == "all_external_contributors"'
 gh api repos/EYYCHEEV/stronk-omp-builds/branches/main/protection --jq '[.allow_force_pushes.enabled, .allow_deletions.enabled, .enforce_admins.enabled] == [false,false,true]'
@@ -137,9 +136,10 @@ These replace code comments (rule 29).
 - Inputs: `tag` must fully match `stronk-omp-[0-9]{8}T[0-9]{6}Z-[0-9]+`, `commit` must be 40 lowercase hex characters, `tests` must parse as described below. Inputs reach scripts only through `env:`. No `${{ }}` expression appears inside any `run:` text (GitHub's "Secure use reference", script injection, Nov 13, 2026). `checks/check_workflow.py` fails on one.
 - Checkout: builder repository and fork are checked out separately with `persist-credentials: false`. `scripts/verify_checkout.py` refuses unless `HEAD` and `refs/tags/<tag>^{commit}` both equal `commit`. The tag is fetched by exact ref, so a branch cannot stand in for it.
 - Toolchain pins: `scripts/source_pins.py` reads the fork's own files. `packageManager` of `bun@X.Y.Z` or `bun@>=X.Y.Z` means exactly `X.Y.Z`; any other spelling is refused. The Rust channel must be `nightly-YYYY-MM-DD` or `X.Y.Z`; `stable`, `beta`, `nightly` and `1.90` are refused. The workflow then checks the installed Bun version and the active Rust toolchain against the pins.
+- Bun authentication: the mandatory `Authenticate Bun release` step runs `scripts/setup_bun.py` immediately after source pins. It fetches the exact macOS arm64 archive and clearsigned manifest, checks the committed public key against `F3DCC08A8572C0749B3E18888EAB4D40A7B22B59` before import into a fresh 0700 keyring, requires a good signature from that signer, and checks the archive digest from the verified body before extracting or running Bun. Only the verified binary's private directory is added to PATH, after its exact-version check. GnuPG is already in the runner image; see `PINS.md`. Failed authentication publishes no PATH entry and cannot run Bun. `checks/check_workflow.py` refuses a missing, skipped, moved or retargeted authentication step.
 - Rust: installed with the runner image's `rustup` using the `minimal` profile, and selected for later steps with `RUSTUP_TOOLCHAIN`. The components and extra targets named in `rust-toolchain.toml` (rustfmt, clippy, rust-analyzer, Linux and Windows targets) are not needed for a host build and are not installed. `RUSTUP_AUTO_INSTALL=0` makes a missing toolchain fail instead of downloading during a build.
 - Natives: `OMP_NATIVE_BUILD_BACKEND=cargo` keeps `bun run build:native` on the host Cargo path (the fork's `scripts/bazel-natives.ts` defaults to it for `host`), so Bazel is never used. `CARGO_INCREMENTAL=0` keeps incremental build state off the 14 GB runner disk. Neither changes what the source does.
-- No caches: `setup-bun` runs with `no-cache: true`; no `actions/cache` step exists, so no earlier run can leave bytes in this build.
+- No caches: the Bun bootstrap uses fresh private runner scratch and neither reads nor saves a cache. No `actions/cache` step exists, so no earlier run supplies Bun bytes.
 - Runner: `macos-15` (Apple M1, 3 cores, 7 GB memory, 14 GB disk, free and unlimited on public repositories per "GitHub-hosted runners reference", Nov 13, 2026), never an `-xlarge` or `-large` label. Build timeout 150 minutes, attest timeout 15, both far under the 360-minute cap. The last build step prints free disk space so the first rehearsal shows how tight 14 GB is.
 - Binary checks: `--version` must print exactly `omp/<coding-agent version from the source>`; `--smoke-test` must exit 0, both run with a minimal environment (`PATH`, a throwaway `HOME`, `XDG_DATA_HOME`, `TMPDIR`) so no runner variable reaches the binary; `codesign --verify --strict` must pass; `lipo -archs` must say `arm64`. The binary is ad-hoc signed by the fork's own build script, not Developer ID signed.
 - Manifest: `build-manifest.json` records fork repository, tag and commit, binary name, sha256 and size, omp version, Bun version, Rust channel, runner `ImageOS` and `ImageVersion`, macOS version, the builder commit and run id, and every test command with its exit code. It is written only when every test exited 0.
@@ -170,3 +170,4 @@ python3 checks/check_workflow.py .github/workflows/mac-build.yml
 ```
 
 `checks/check_workflow.py` fails when: any `uses:` is not `owner/repo@<40 hex>`; any trigger other than `workflow_dispatch`; top-level `permissions` is not `{}`; a job holds a permission beyond `contents: read` (build) or `contents: read`, `id-token: write`, `attestations: write` (attest); a `run:` block holds `${{`; build `runs-on` is not `macos-15` or attest `runs-on` is not a standard Ubuntu label. It also fails on any job other than `build` and `attest`, a missing or over-long `timeout-minutes`, a checkout without `persist-credentials: false`, a reference to secrets, and any YAML comment.
+The check also requires the unconditional Bun authentication command with exactly the source-pins version input, immediately after `Read source pins`. The authentication step cannot set `if`, `continue-on-error`, another working directory or an alternate command.

@@ -66,10 +66,41 @@ def check_job_permissions(name, job):
     ]
 
 
+def check_bun_authentication(job):
+    steps = job.get("steps") or []
+    if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+        return ["Bun authentication requires a build steps list"]
+    indexes = [
+        index for index, step in enumerate(steps)
+        if step.get("run") == "python3 builder/scripts/setup_bun.py"
+    ]
+    if len(indexes) != 1:
+        return ["Bun authentication must run exactly once before source builds"]
+    index = indexes[0]
+    authentication = steps[index]
+    violations = []
+    if set(authentication) - {"name", "run", "env"}:
+        violations.append("Bun authentication cannot be skipped, softened or redirected")
+    if authentication.get("env") != {"BUN_VERSION": "${{ steps.pins.outputs.bun }}"}:
+        violations.append("Bun authentication must use exactly the source-pins version")
+    pins = [
+        position for position, step in enumerate(steps)
+        if step.get("id") == "pins"
+        and step.get("run") == "python3 builder/scripts/source_pins.py --source src"
+    ]
+    if len(pins) != 1 or index != pins[0] + 1:
+        violations.append("Bun authentication must immediately follow source pins")
+    if any(str(step.get("uses", "")).startswith("oven-sh/setup-bun@") for step in steps):
+        violations.append("Bun authentication cannot be replaced by an unauthenticated setup action")
+    return violations
+
+
 def check_job(name, job):
     if name not in JOB_PERMISSIONS:
         return [f"unexpected job {name}"]
     violations = check_runs_on(name, job) + check_job_permissions(name, job)
+    if name == "build":
+        violations.extend(check_bun_authentication(job))
     timeout = job.get("timeout-minutes")
     if type(timeout) is not int or not 1 <= timeout <= 359:
         violations.append(f"job {name} timeout-minutes {timeout!r} is not an integer from 1 to 359")

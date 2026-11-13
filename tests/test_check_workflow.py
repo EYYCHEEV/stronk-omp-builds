@@ -1,12 +1,16 @@
+import copy
 import contextlib
 import io
 import unittest
+
+import yaml
 
 import support
 from check_workflow import check, main
 
 REAL = support.WORKFLOW.read_text(encoding="utf-8")
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+AUTHENTICATE_BUN = "python3 builder/scripts/setup_bun.py"
 
 MUTATIONS = {
     "tag instead of sha": (CHECKOUT, "actions/checkout@v7", "is not owner/repo@<40 hex commit>"),
@@ -57,6 +61,39 @@ class CheckWorkflowTests(unittest.TestCase):
 
     def test_the_real_workflow_passes(self):
         self.assertEqual(check(support.WORKFLOW), [])
+
+    def test_removing_bun_authentication_is_refused(self):
+        document = yaml.safe_load(REAL)
+        steps = document["jobs"]["build"]["steps"]
+        document["jobs"]["build"]["steps"] = [
+            step for step in steps if step.get("run") != AUTHENTICATE_BUN
+        ]
+        violations = check(self.write(yaml.safe_dump(document)))
+        self.assertTrue(any("Bun authentication" in item for item in violations), violations)
+
+    def test_bun_authentication_cannot_be_skipped_or_retargeted(self):
+        original = yaml.safe_load(REAL)
+        steps = original["jobs"]["build"]["steps"]
+        indexes = [index for index, step in enumerate(steps) if step.get("run") == AUTHENTICATE_BUN]
+        self.assertEqual(len(indexes), 1)
+        index = indexes[0]
+        for field, value in (
+            ("if", False),
+            ("continue-on-error", True),
+            ("run", "true"),
+            ("env", {"BUN_VERSION": "latest"}),
+            ("working-directory", "src"),
+        ):
+            with self.subTest(field=field):
+                document = copy.deepcopy(original)
+                document["jobs"]["build"]["steps"][index][field] = value
+                violations = check(self.write(yaml.safe_dump(document)))
+                self.assertTrue(any("Bun authentication" in item for item in violations), violations)
+        document = copy.deepcopy(original)
+        moved = document["jobs"]["build"]["steps"].pop(index)
+        document["jobs"]["build"]["steps"].append(moved)
+        violations = check(self.write(yaml.safe_dump(document)))
+        self.assertTrue(any("Bun authentication" in item for item in violations), violations)
 
     def test_each_mutation_fails_with_its_own_reason(self):
         for name, (old, new, expected) in MUTATIONS.items():

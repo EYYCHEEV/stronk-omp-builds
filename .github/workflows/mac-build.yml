@@ -69,22 +69,10 @@ jobs:
         id: pins
         run: python3 builder/scripts/source_pins.py --source src
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: ${{ steps.pins.outputs.bun }}
-          no-cache: true
-
-      - name: Verify Bun version
+      - name: Authenticate Bun release
         env:
-          WANT: ${{ steps.pins.outputs.bun }}
-        run: |
-          set -euo pipefail
-          have="$(bun --version)"
-          if [ "$have" != "$WANT" ]; then
-            echo "bun is $have, source pins $WANT" >&2
-            exit 1
-          fi
+          BUN_VERSION: ${{ steps.pins.outputs.bun }}
+        run: python3 builder/scripts/setup_bun.py
 
       - name: Install Rust toolchain
         env:
