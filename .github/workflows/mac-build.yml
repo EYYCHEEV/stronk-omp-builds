@@ -1,0 +1,197 @@
+name: mac-build
+run-name: mac-build ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Fork tag to build, stronk-omp-YYYYMMDDTHHMMSSZ-N
+        required: true
+        type: string
+      commit:
+        description: Full 40 character lowercase commit the tag must point at
+        required: true
+        type: string
+      tests:
+        description: JSON list of argv lists, each one bun test or cargo test with plain arguments
+        required: true
+        type: string
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build darwin-arm64
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    env:
+      RUSTUP_AUTO_INSTALL: "0"
+      OMP_NATIVE_BUILD_BACKEND: cargo
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out builder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          TESTS: ${{ inputs.tests }}
+        run: python3 builder/scripts/validate_inputs.py
+
+      - name: Check out fork tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: EYYCHEEV/oh-my-pi
+          ref: refs/tags/${{ inputs.tag }}
+          path: src
+          persist-credentials: false
+
+      - name: Verify tag and commit
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+        run: python3 builder/scripts/verify_checkout.py src
+
+      - name: Read source pins
+        id: pins
+        run: python3 builder/scripts/source_pins.py --source src
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ steps.pins.outputs.bun }}
+          no-cache: true
+
+      - name: Verify Bun version
+        env:
+          WANT: ${{ steps.pins.outputs.bun }}
+        run: |
+          set -euo pipefail
+          have="$(bun --version)"
+          if [ "$have" != "$WANT" ]; then
+            echo "bun is $have, source pins $WANT" >&2
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        env:
+          CHANNEL: ${{ steps.pins.outputs.rust }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$CHANNEL" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$CHANNEL" >> "$GITHUB_ENV"
+          active="$(RUSTUP_TOOLCHAIN="$CHANNEL" rustup show active-toolchain)"
+          case "$active" in
+            "$CHANNEL"-aarch64-apple-darwin*) ;;
+            *)
+              echo "active toolchain is $active, source pins $CHANNEL" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install dependencies
+        working-directory: src
+        run: bun install --frozen-lockfile
+
+      - name: Build natives
+        working-directory: src
+        run: bun run build:native
+
+      - name: Build binary
+        working-directory: src
+        run: bun --cwd=packages/coding-agent run build
+
+      - name: Run tests
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: python3 builder/scripts/run_tests.py --repo src --results "$RUNNER_TEMP/test-results.json"
+
+      - name: Collect binary
+        run: |
+          set -euo pipefail
+          mkdir out
+          cp src/packages/coding-agent/dist/omp out/omp-darwin-arm64
+          chmod 755 out/omp-darwin-arm64
+
+      - name: Smoke binary
+        env:
+          EXPECTED_VERSION: ${{ steps.pins.outputs.omp }}
+        run: python3 builder/scripts/smoke.py --binary out/omp-darwin-arm64 --version "$EXPECTED_VERSION"
+
+      - name: Verify code signature and architecture
+        run: |
+          set -euo pipefail
+          codesign --verify --strict --verbose=2 out/omp-darwin-arm64
+          archs="$(lipo -archs out/omp-darwin-arm64)"
+          if [ "$archs" != "arm64" ]; then
+            echo "binary architectures: $archs" >&2
+            exit 1
+          fi
+
+      - name: Write build manifest
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+        run: python3 builder/scripts/manifest.py write --source src --binary out/omp-darwin-arm64 --tests "$RUNNER_TEMP/test-results.json" --output out/build-manifest.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mac-build
+          path: |
+            out/omp-darwin-arm64
+            out/build-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Record disk use
+        if: ${{ !cancelled() }}
+        run: df -h "$GITHUB_WORKSPACE"
+
+  attest:
+    name: attest
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out builder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Download artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: mac-build
+          path: artifact
+
+      - name: Verify artifact against manifest
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+        run: python3 builder/scripts/manifest.py verify --artifact-dir artifact
+
+      - name: Attest binary and manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            artifact/omp-darwin-arm64
+            artifact/build-manifest.json
