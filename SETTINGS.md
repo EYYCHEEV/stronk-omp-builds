@@ -119,9 +119,13 @@ The attest job signs two files with `actions/attest` (SLSA build provenance, Sig
 
 Verification the updater runs (not run here; needs `gh` 2.102.0 or newer, because earlier versions matched `--source-ref` without case, advisory GHSA-4mq3-hpgx-9cx8):
 
+`REVIEWED_BUILDER_COMMIT` below means the exact reviewed 40-character builder commit pinned as `MAC_BUILDER_TRUSTED_COMMIT` in the updater, not a value read from mutable `main`, a release manifest or a workflow predicate. Set that pin only after review of the post-fix builder commit; while it is unset, the updater refuses collection and installation. Changing the trusted builder commit is its own reviewed updater change, never an automatic part of a release.
+
+The [GitHub CLI verifier manual](https://cli.github.com/manual/gh_attestation_verify), read 2026-11-13, specifies that `--signer-digest` enforces the signer workflow's digest. Both files must pass the same pinned digest. An otherwise valid attestation from another commit on the same repository, workflow path and `main` ref must fail.
+
 ```
-gh attestation verify omp-darwin-arm64 --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
-gh attestation verify build-manifest.json --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
+gh attestation verify omp-darwin-arm64 --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --signer-digest "$REVIEWED_BUILDER_COMMIT" --source-ref refs/heads/main --deny-self-hosted-runners
+gh attestation verify build-manifest.json --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --signer-digest "$REVIEWED_BUILDER_COMMIT" --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
 Then it must read `build-manifest.json` and require `fork.repository == EYYCHEEV/oh-my-pi`, the exact tag and commit it pushed, `binary.name == omp-darwin-arm64`, `binary.sha256` equal to the sha256 of the binary it downloaded, `omp_version` equal to the version it expects, and every `tests[].exit_code == 0`.
@@ -132,7 +136,7 @@ The `gh attestation verify` manual (read Nov 13, 2026) warns that only the certi
 
 These replace code comments (rule 29).
 
-- Trigger and ref: only `workflow_dispatch`. `scripts/validate_inputs.py` refuses unless the event is `workflow_dispatch`, the ref is `refs/heads/main` and the repository is `EYYCHEEV/stronk-omp-builds`. A dispatch may name any branch and GitHub then runs that branch's copy of the workflow file, so the ref check stops an accidental dispatch from a branch. It is not the enforcement against a hostile branch, because that branch's scripts would run the check; the enforcement is `--source-ref refs/heads/main` in the updater's attestation verification, which rejects anything signed from another ref.
+- Trigger and ref: only `workflow_dispatch`. `scripts/validate_inputs.py` refuses unless the event is `workflow_dispatch`, the ref is `refs/heads/main` and the repository is `EYYCHEEV/stronk-omp-builds`. A dispatch may name any branch and run that branch's workflow, so this local ref check stops an accidental dispatch, not a hostile changed builder. The updater independently enforces both `--source-ref refs/heads/main` and the reviewed `--signer-digest`, rejecting a different branch or a later changed commit on main.
 - Inputs: `tag` must fully match `stronk-omp-[0-9]{8}T[0-9]{6}Z-[0-9]+`, `commit` must be 40 lowercase hex characters, `tests` must parse as described below. Inputs reach scripts only through `env:`. No `${{ }}` expression appears inside any `run:` text (GitHub's "Secure use reference", script injection, Nov 13, 2026). `checks/check_workflow.py` fails on one.
 - Checkout: builder repository and fork are checked out separately with `persist-credentials: false`. `scripts/verify_checkout.py` refuses unless `HEAD` and `refs/tags/<tag>^{commit}` both equal `commit`. The tag is fetched by exact ref, so a branch cannot stand in for it.
 - Toolchain pins: `scripts/source_pins.py` reads the fork's own files. `packageManager` of `bun@X.Y.Z` or `bun@>=X.Y.Z` means exactly `X.Y.Z`; any other spelling is refused. The Rust channel must be `nightly-YYYY-MM-DD` or `X.Y.Z`; `stable`, `beta`, `nightly` and `1.90` are refused. The workflow then checks the installed Bun version and the active Rust toolchain against the pins.
