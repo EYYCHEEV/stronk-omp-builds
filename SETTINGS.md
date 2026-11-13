@@ -158,7 +158,7 @@ These replace code comments (rule 29).
 
 The program is looked up on `PATH` and refused if it sits inside the checkout. A test that outlives `--timeout-seconds` (default 3000) is killed with its process group and recorded as exit code 124.
 
-The fork's contract list holds about 66 entries (about 24 with a name pattern) at the time of writing. Each entry runs one after the other on the 3-core runner, so the whole list has to fit inside the build job's 150-minute timeout, which is the only overall cap. Nothing has measured that yet; the first rehearsal run measures it, and the timeout is then raised or the list split by whoever owns the contract list.
+The fork's contract list, counted at the time of writing, holds 65 `bun test` entries (16 with a name pattern, the longest pattern 80 characters, at most 10 paths per entry) and one `python3` audit command, which this runner refuses because it only runs `bun test` and `cargo test`. Each entry runs one after the other on the 3-core runner, so the whole list has to fit inside the build job's 150-minute timeout, which is the only overall cap. Nothing has measured that yet; the first rehearsal run measures it, and the timeout is then raised or the list split by whoever owns the contract list.
 
 ## Local checks
 
