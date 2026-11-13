@@ -10,7 +10,7 @@ from validate_inputs import main, validate
 GOOD = {
     "EVENT": "workflow_dispatch",
     "REF": "refs/heads/main",
-    "REPOSITORY": "EYYCHEEV/omp-mac-build",
+    "REPOSITORY": "EYYCHEEV/stronk-omp-builds",
     "TAG": support.TAG,
     "COMMIT": support.COMMIT,
     "TESTS": json.dumps([["bun", "test", "packages/coding-agent/test/a.test.ts"]]),
@@ -27,7 +27,7 @@ class ValidateInputsTests(unittest.TestCase):
         bad = {
             "EVENT": "push",
             "REF": "refs/heads/other",
-            "REPOSITORY": "someone/omp-mac-build",
+            "REPOSITORY": "someone/stronk-omp-builds",
             "TAG": "stronk-omp-20261101T151318Z-9111\n",
             "COMMIT": support.COMMIT.upper(),
             "TESTS": json.dumps([["sh", "-c", "id"]]),

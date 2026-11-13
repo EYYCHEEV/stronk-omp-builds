@@ -1,6 +1,6 @@
 # Repository settings and design notes
 
-Status: written locally only. Nothing here has been run against GitHub. Every `gh api` command below changes or reads `EYYCHEEV/omp-mac-build`, which does not exist yet; creating it waits for the Captain's yes.
+Status: written locally only. Nothing here has been run against GitHub. Every `gh api` command below changes or reads `EYYCHEEV/stronk-omp-builds`. The Captain said yes to that repository (FC-6738); each command still runs only on Ives's OK for its exact line.
 
 API facts were read from GitHub Docs on Fri Nov 13, 2026: "REST API endpoints for GitHub Actions permissions", "REST API endpoints for protected branches", "REST API endpoints for repositories", "Workflow syntax for GitHub Actions", "Secure use reference", "Using artifact attestations to establish provenance for builds", and the GitHub CLI manual page `gh attestation verify`.
 
@@ -17,20 +17,20 @@ API facts were read from GitHub Docs on Fri Nov 13, 2026: "REST API endpoints fo
 Step 0, create the repository empty, public, with no issues, wiki, projects or pull requests:
 
 ```
-gh api -X POST user/repos -f name=omp-mac-build -f description='Builds and tests the macOS omp binary for tagged fork commits' -F private=false -F has_issues=false -F has_wiki=false -F has_projects=false -F auto_init=false
-gh api -X PATCH repos/EYYCHEEV/omp-mac-build -F has_pull_requests=false
+gh api -X POST user/repos -f name=stronk-omp-builds -f description='Stronk omp build jobs: builds and tests the macOS omp binary for tagged EYYCHEEV/oh-my-pi commits' -F private=false -F has_issues=false -F has_wiki=false -F has_projects=false -F auto_init=false
+gh api -X PATCH repos/EYYCHEEV/stronk-omp-builds -F has_pull_requests=false
 ```
 
 Setting 1, Actions on, only the allowed list, SHA pinning required:
 
 ```
-gh api -X PUT repos/EYYCHEEV/omp-mac-build/actions/permissions -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true
+gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions -F enabled=true -f allowed_actions=selected -F sha_pinning_required=true
 ```
 
 Setting 2, the allowed list is exactly the five pinned actions, nothing GitHub-owned or Marketplace-verified by default (the list must equal the `uses:` lines and `PINS.md`; `patterns_allowed` applies to public repositories, per the same docs page):
 
 ```
-gh api -X PUT repos/EYYCHEEV/omp-mac-build/actions/permissions/selected-actions --input - <<'JSON'
+gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-actions --input - <<'JSON'
 {
   "github_owned_allowed": false,
   "verified_allowed": false,
@@ -48,19 +48,19 @@ JSON
 Setting 3, the default workflow token is read-only and Actions cannot approve pull requests:
 
 ```
-gh api -X PUT repos/EYYCHEEV/omp-mac-build/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
+gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
 ```
 
 Setting 4, workflows from outside contributors always need a maintainer's approval (a backstop; see "Forks and outside pull requests" below):
 
 ```
-gh api -X PUT repos/EYYCHEEV/omp-mac-build/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors
+gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/actions/permissions/fork-pr-contributor-approval -f approval_policy=all_external_contributors
 ```
 
 Setting 5, `main` cannot be force-pushed or deleted, including by the owner. Ordinary fast-forward pushes by the owner still work because no status checks, pull request reviews or push restrictions are required:
 
 ```
-gh api -X PUT repos/EYYCHEEV/omp-mac-build/branches/main/protection --input - <<'JSON'
+gh api -X PUT repos/EYYCHEEV/stronk-omp-builds/branches/main/protection --input - <<'JSON'
 {
   "required_status_checks": null,
   "enforce_admins": true,
@@ -81,26 +81,26 @@ Setting 7, the workflow file on `main` is the reviewed one: push only the commit
 Each command prints `true` when the setting holds.
 
 ```
-gh api repos/EYYCHEEV/omp-mac-build --jq '[.private, .has_issues, .has_wiki, .has_projects, .has_pull_requests, .default_branch] == [false,false,false,false,false,"main"]'
-gh api repos/EYYCHEEV/omp-mac-build/actions/permissions --jq '[.enabled, .allowed_actions, .sha_pinning_required] == [true,"selected",true]'
-gh api repos/EYYCHEEV/omp-mac-build/actions/permissions/selected-actions --jq '[.github_owned_allowed, .verified_allowed, (.patterns_allowed | sort)] == [false,false,["actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6","actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1","actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333","actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9","oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"]]'
-gh api repos/EYYCHEEV/omp-mac-build/actions/permissions/workflow --jq '[.default_workflow_permissions, .can_approve_pull_request_reviews] == ["read", false]'
-gh api repos/EYYCHEEV/omp-mac-build/actions/permissions/fork-pr-contributor-approval --jq '.approval_policy == "all_external_contributors"'
-gh api repos/EYYCHEEV/omp-mac-build/branches/main/protection --jq '[.allow_force_pushes.enabled, .allow_deletions.enabled, .enforce_admins.enabled] == [false,false,true]'
-gh api repos/EYYCHEEV/omp-mac-build/actions/secrets --jq '.total_count == 0'
-gh api repos/EYYCHEEV/omp-mac-build/dependabot/secrets --jq '.total_count == 0'
-gh api repos/EYYCHEEV/omp-mac-build/actions/variables --jq '.total_count == 0'
-gh api repos/EYYCHEEV/omp-mac-build/environments --jq '.total_count == 0'
-gh api repos/EYYCHEEV/omp-mac-build/actions/runners --jq '.total_count == 0'
-gh api repos/EYYCHEEV/omp-mac-build/keys --jq 'length == 0'
-gh api repos/EYYCHEEV/omp-mac-build/hooks --jq 'length == 0'
-gh api repos/EYYCHEEV/omp-mac-build/actions/workflows --jq '[.workflows[].path] == [".github/workflows/mac-build.yml"]'
+gh api repos/EYYCHEEV/stronk-omp-builds --jq '[.private, .has_issues, .has_wiki, .has_projects, .has_pull_requests, .default_branch] == [false,false,false,false,false,"main"]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions --jq '[.enabled, .allowed_actions, .sha_pinning_required] == [true,"selected",true]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/selected-actions --jq '[.github_owned_allowed, .verified_allowed, (.patterns_allowed | sort)] == [false,false,["actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6","actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1","actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333","actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9","oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"]]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/workflow --jq '[.default_workflow_permissions, .can_approve_pull_request_reviews] == ["read", false]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/permissions/fork-pr-contributor-approval --jq '.approval_policy == "all_external_contributors"'
+gh api repos/EYYCHEEV/stronk-omp-builds/branches/main/protection --jq '[.allow_force_pushes.enabled, .allow_deletions.enabled, .enforce_admins.enabled] == [false,false,true]'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/secrets --jq '.total_count == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/dependabot/secrets --jq '.total_count == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/variables --jq '.total_count == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/environments --jq '.total_count == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/runners --jq '.total_count == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/keys --jq 'length == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/hooks --jq 'length == 0'
+gh api repos/EYYCHEEV/stronk-omp-builds/actions/workflows --jq '[.workflows[].path] == [".github/workflows/mac-build.yml"]'
 ```
 
 To prove the workflow file on `main` is the committed one, the blob SHA GitHub reports must equal the local one:
 
 ```
-gh api 'repos/EYYCHEEV/omp-mac-build/contents/.github/workflows/mac-build.yml?ref=main' --jq .sha
+gh api 'repos/EYYCHEEV/stronk-omp-builds/contents/.github/workflows/mac-build.yml?ref=main' --jq .sha
 git hash-object .github/workflows/mac-build.yml
 ```
 
@@ -112,7 +112,7 @@ Three layers, none of them depending on another:
 2. `has_pull_requests=false` removes pull requests from the repository (field documented under "Update a repository", Nov 13, 2026).
 3. The fork approval policy `all_external_contributors` makes GitHub hold any workflow run an outside contributor's pull request would start until a maintainer approves.
 
-Public repositories cannot switch forking off (`allow_forking` applies to private repositories only). A fork carries a copy of the workflow, but a run in someone else's fork signs attestations under that fork's name, and the updater verifies `--repo EYYCHEEV/omp-mac-build`, so such a run cannot produce an accepted binary. `scripts/validate_inputs.py` also refuses any run whose repository is not `EYYCHEEV/omp-mac-build`.
+Public repositories cannot switch forking off (`allow_forking` applies to private repositories only). A fork carries a copy of the workflow, but a run in someone else's fork signs attestations under that fork's name, and the updater verifies `--repo EYYCHEEV/stronk-omp-builds`, so such a run cannot produce an accepted binary. `scripts/validate_inputs.py` also refuses any run whose repository is not `EYYCHEEV/stronk-omp-builds`.
 
 ## What the attestation proves, and how the updater checks it
 
@@ -121,8 +121,8 @@ The attest job signs two files with `actions/attest` (SLSA build provenance, Sig
 Verification the updater runs (not run here; needs `gh` 2.102.0 or newer, because earlier versions matched `--source-ref` without case, advisory GHSA-4mq3-hpgx-9cx8):
 
 ```
-gh attestation verify omp-darwin-arm64 --repo EYYCHEEV/omp-mac-build --signer-workflow EYYCHEEV/omp-mac-build/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
-gh attestation verify build-manifest.json --repo EYYCHEEV/omp-mac-build --signer-workflow EYYCHEEV/omp-mac-build/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
+gh attestation verify omp-darwin-arm64 --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
+gh attestation verify build-manifest.json --repo EYYCHEEV/stronk-omp-builds --signer-workflow EYYCHEEV/stronk-omp-builds/.github/workflows/mac-build.yml --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
 Then it must read `build-manifest.json` and require `fork.repository == EYYCHEEV/oh-my-pi`, the exact tag and commit it pushed, `binary.name == omp-darwin-arm64`, `binary.sha256` equal to the sha256 of the binary it downloaded, `omp_version` equal to the version it expects, and every `tests[].exit_code == 0`.
@@ -133,7 +133,7 @@ The `gh attestation verify` manual (read Nov 13, 2026) warns that only the certi
 
 These replace code comments (rule 29).
 
-- Trigger and ref: only `workflow_dispatch`. `scripts/validate_inputs.py` refuses unless the event is `workflow_dispatch`, the ref is `refs/heads/main` and the repository is `EYYCHEEV/omp-mac-build`. A dispatch may name any branch and GitHub then runs that branch's copy of the workflow file, so the ref check stops an accidental dispatch from a branch. It is not the enforcement against a hostile branch, because that branch's scripts would run the check; the enforcement is `--source-ref refs/heads/main` in the updater's attestation verification, which rejects anything signed from another ref.
+- Trigger and ref: only `workflow_dispatch`. `scripts/validate_inputs.py` refuses unless the event is `workflow_dispatch`, the ref is `refs/heads/main` and the repository is `EYYCHEEV/stronk-omp-builds`. A dispatch may name any branch and GitHub then runs that branch's copy of the workflow file, so the ref check stops an accidental dispatch from a branch. It is not the enforcement against a hostile branch, because that branch's scripts would run the check; the enforcement is `--source-ref refs/heads/main` in the updater's attestation verification, which rejects anything signed from another ref.
 - Inputs: `tag` must fully match `stronk-omp-[0-9]{8}T[0-9]{6}Z-[0-9]+`, `commit` must be 40 lowercase hex characters, `tests` must parse as described below. Inputs reach scripts only through `env:`. No `${{ }}` expression appears inside any `run:` text (GitHub's "Secure use reference", script injection, Nov 13, 2026). `checks/check_workflow.py` fails on one.
 - Checkout: builder repository and fork are checked out separately with `persist-credentials: false`. `scripts/verify_checkout.py` refuses unless `HEAD` and `refs/tags/<tag>^{commit}` both equal `commit`. The tag is fetched by exact ref, so a branch cannot stand in for it.
 - Toolchain pins: `scripts/source_pins.py` reads the fork's own files. `packageManager` of `bun@X.Y.Z` or `bun@>=X.Y.Z` means exactly `X.Y.Z`; any other spelling is refused. The Rust channel must be `nightly-YYYY-MM-DD` or `X.Y.Z`; `stable`, `beta`, `nightly` and `1.90` are refused. The workflow then checks the installed Bun version and the active Rust toolchain against the pins.

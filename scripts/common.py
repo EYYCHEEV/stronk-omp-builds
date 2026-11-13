@@ -2,7 +2,7 @@ import hashlib
 import re
 
 FORK_REPOSITORY = "EYYCHEEV/oh-my-pi"
-BUILDER_REPOSITORY = "EYYCHEEV/omp-mac-build"
+BUILDER_REPOSITORY = "EYYCHEEV/stronk-omp-builds"
 BINARY_NAME = "omp-darwin-arm64"
 MANIFEST_NAME = "build-manifest.json"
 

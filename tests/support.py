@@ -41,7 +41,7 @@ def runner_environment(**overrides):
         "ImageVersion": "20261104.0514.1",
         "RUNNER_OS": "macOS",
         "RUNNER_ARCH": "ARM64",
-        "GITHUB_REPOSITORY": "EYYCHEEV/omp-mac-build",
+        "GITHUB_REPOSITORY": "EYYCHEEV/stronk-omp-builds",
         "GITHUB_SHA": OTHER_COMMIT,
         "GITHUB_RUN_ID": "1234567890",
         "GITHUB_RUN_ATTEMPT": "1",
