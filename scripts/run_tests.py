@@ -11,8 +11,8 @@ from typing import NamedTuple
 
 from common import Refusal
 
-MAX_JSON_CHARS = 16384
-MAX_ENTRIES = 32
+MAX_JSON_CHARS = 49152
+MAX_ENTRIES = 128
 MAX_ARGUMENTS = 64
 MAX_ARGUMENT_CHARS = 256
 DEFAULT_TIMEOUT_SECONDS = 3000
@@ -25,6 +25,8 @@ BUN_TIMEOUT = re.compile(r"--timeout=[0-9]{1,7}")
 HARNESS_THREADS = re.compile(r"--test-threads=[0-9]{1,3}")
 
 BUN_FLAGS = frozenset({"--bail", "--only-failures"})
+PATTERN_OPTION = "--test-name-pattern"
+PATTERN_PREFIX = PATTERN_OPTION + "="
 CARGO_FLAGS = frozenset(
     {
         "--workspace",
@@ -61,7 +63,17 @@ def check_path(label, argument):
 
 def check_bun(label, rest):
     paths = []
-    for argument in rest:
+    arguments = iter(rest)
+    for argument in arguments:
+        if argument == PATTERN_OPTION:
+            value = next(arguments, None)
+            if value is None or value.startswith("-"):
+                raise Refusal(f"{label}: {PATTERN_OPTION} needs one value that does not start with a hyphen")
+            continue
+        if argument.startswith(PATTERN_PREFIX):
+            if argument == PATTERN_PREFIX:
+                raise Refusal(f"{label}: {PATTERN_PREFIX} needs a value")
+            continue
         if argument.startswith("-"):
             if argument in BUN_FLAGS or BUN_TIMEOUT.fullmatch(argument):
                 continue
@@ -115,6 +127,12 @@ def check_cargo(label, rest):
     return [], manifests
 
 
+def argument_limit(argument):
+    if argument.startswith(PATTERN_PREFIX):
+        return MAX_ARGUMENT_CHARS + len(PATTERN_PREFIX)
+    return MAX_ARGUMENT_CHARS
+
+
 def check_entry(index, entry):
     label = f"tests[{index}]"
     if not isinstance(entry, list):
@@ -122,7 +140,7 @@ def check_entry(index, entry):
     if not 2 <= len(entry) <= MAX_ARGUMENTS:
         raise Refusal(f"{label} must have between 2 and {MAX_ARGUMENTS} arguments")
     for argument in entry:
-        if not isinstance(argument, str) or not 0 < len(argument) <= MAX_ARGUMENT_CHARS:
+        if not isinstance(argument, str) or not 0 < len(argument) <= argument_limit(argument):
             raise Refusal(f"{label} holds an argument that is not a short non-empty string")
         if not argument.isascii() or not argument.isprintable():
             raise Refusal(f"{label} holds an argument with control or non-ASCII characters")
