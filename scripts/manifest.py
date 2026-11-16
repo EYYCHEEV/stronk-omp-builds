@@ -9,6 +9,7 @@ from common import (
     BINARY_NAME,
     BUILDER_REPOSITORY,
     COMMIT_PATTERN,
+    DISPATCH_ID_PATTERN,
     FORK_REPOSITORY,
     MANIFEST_NAME,
     SHA256_PATTERN,
@@ -17,6 +18,7 @@ from common import (
     require_match,
     sha256_file,
 )
+from probe_runtime import check_measured, load_measured
 from source_pins import read_pins
 
 SCHEMA = 1
@@ -48,7 +50,26 @@ def require_env(environ, name):
     return value
 
 
-def build_manifest(source, binary, results_path, environ):
+def runner_record(environ):
+    return {
+        "image_os": require_env(environ, "ImageOS"),
+        "image_version": require_env(environ, "ImageVersion"),
+        "os": require_env(environ, "RUNNER_OS"),
+        "arch": require_env(environ, "RUNNER_ARCH"),
+        "macos_version": platform.mac_ver()[0],
+    }
+
+
+def builder_record(environ):
+    return {
+        "repository": require_env(environ, "GITHUB_REPOSITORY"),
+        "commit": require_env(environ, "GITHUB_SHA"),
+        "run_id": require_env(environ, "GITHUB_RUN_ID"),
+        "run_attempt": require_env(environ, "GITHUB_RUN_ATTEMPT"),
+    }
+
+
+def build_manifest(source, binary, results_path, probe_path, environ):
     tag = require_match(TAG_PATTERN, environ.get("TAG"), "tag")
     commit = require_match(COMMIT_PATTERN, environ.get("COMMIT"), "commit")
     pins = read_pins(source)
@@ -65,27 +86,38 @@ def build_manifest(source, binary, results_path, environ):
         },
         "omp_version": pins["omp"],
         "toolchain": {"bun": pins["bun"], "rust_channel": pins["rust"]},
-        "runner": {
-            "image_os": require_env(environ, "ImageOS"),
-            "image_version": require_env(environ, "ImageVersion"),
-            "os": require_env(environ, "RUNNER_OS"),
-            "arch": require_env(environ, "RUNNER_ARCH"),
-            "macos_version": platform.mac_ver()[0],
-        },
-        "builder": {
-            "repository": require_env(environ, "GITHUB_REPOSITORY"),
-            "commit": require_env(environ, "GITHUB_SHA"),
-            "run_id": require_env(environ, "GITHUB_RUN_ID"),
-            "run_attempt": require_env(environ, "GITHUB_RUN_ATTEMPT"),
-        },
+        "measured": load_measured(probe_path),
+        "runner": runner_record(environ),
+        "builder": builder_record(environ),
         "tests": load_results(results_path),
     }
 
 
-def write_manifest(source, binary, results_path, output, environ):
-    manifest = build_manifest(source, binary, results_path, environ)
+def write_manifest(source, binary, results_path, probe_path, output, environ):
+    manifest = build_manifest(source, binary, results_path, probe_path, environ)
     Path(output).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
+
+
+def write_precheck_record(results_path, probe_path, output, environ):
+    if environ.get("TAG"):
+        raise Refusal("a pre-check record takes no tag")
+    record = {
+        "schema": SCHEMA,
+        "mode": "precheck",
+        "dispatch_id": require_match(DISPATCH_ID_PATTERN, environ.get("DISPATCH_ID"), "dispatch_id"),
+        "fork": {
+            "repository": FORK_REPOSITORY,
+            "commit": require_match(COMMIT_PATTERN, environ.get("COMMIT"), "commit"),
+        },
+        "measured": load_measured(probe_path),
+        "runner": runner_record(environ),
+        "builder": builder_record(environ),
+        "tests": load_results(results_path),
+    }
+    with open(output, "x", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return record
 
 
 def as_object(value, label):
@@ -131,6 +163,7 @@ def verify_artifact(directory, environ):
         not isinstance(test, dict) or test.get("exit_code") != 0 for test in tests
     ):
         raise Refusal("manifest does not record passing tests")
+    check_measured(manifest.get("measured"), "manifest measured")
     return manifest
 
 
@@ -142,18 +175,26 @@ def main(argv=None, environ=None):
     write.add_argument("--source", required=True)
     write.add_argument("--binary", required=True)
     write.add_argument("--tests", required=True)
+    write.add_argument("--probe", required=True)
     write.add_argument("--output", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--artifact-dir", required=True)
+    precheck = commands.add_parser("precheck")
+    precheck.add_argument("--tests", required=True)
+    precheck.add_argument("--probe", required=True)
+    precheck.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "write":
-            manifest = write_manifest(args.source, args.binary, args.tests, args.output, environ)
+            manifest = write_manifest(args.source, args.binary, args.tests, args.probe, args.output, environ)
             print(f"manifest written: {manifest['binary']['sha256']}")
+        elif args.command == "precheck":
+            record = write_precheck_record(args.tests, args.probe, args.output, environ)
+            print(f"pre-check record written: SQLite {record['measured']['sqlite_version']}")
         else:
             manifest = verify_artifact(args.artifact_dir, environ)
             print(f"artifact verified: {manifest['binary']['sha256']}")
-    except Refusal as refusal:
+    except (Refusal, FileExistsError) as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
     return 0

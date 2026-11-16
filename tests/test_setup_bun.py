@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import io
 import os
@@ -148,13 +149,27 @@ class SetupBunTests(unittest.TestCase):
                 setup_bun.setup_bun(version, self.runner_temp, self.path_output)
         self.assertEqual(self.calls, [])
 
-    def test_normal_entry_point_installs_the_pinned_version(self):
+    def test_normal_entry_point_installs_the_pinned_version_and_reports_its_path_and_digest(self):
+        outputs = self.runner_temp / "github-output"
+        environment = {
+            "BUN_VERSION": "1.4.4", "RUNNER_TEMP": str(self.runner_temp),
+            "GITHUB_PATH": str(self.path_output), "GITHUB_OUTPUT": str(outputs),
+        }
+        self.assertEqual(setup_bun.main([], environ=environment), 0)
+        self.assertTrue(self.path_output.exists())
+        lines = dict(line.split("=", 1) for line in outputs.read_text(encoding="utf-8").splitlines())
+        binary = Path(lines["path"])
+        self.assertEqual(binary.parent, Path(self.path_output.read_text(encoding="utf-8").strip()))
+        self.assertEqual(lines["sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+
+    def test_entry_point_without_a_step_output_file_refuses(self):
         environment = {
             "BUN_VERSION": "1.4.4", "RUNNER_TEMP": str(self.runner_temp),
             "GITHUB_PATH": str(self.path_output),
         }
-        self.assertEqual(setup_bun.main([], environ=environment), 0)
-        self.assertTrue(self.path_output.exists())
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(setup_bun.main([], environ=environment), 2)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

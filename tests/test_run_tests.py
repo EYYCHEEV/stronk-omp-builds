@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -249,8 +250,14 @@ class RunTests(unittest.TestCase):
         support.make_stub(self.bin, "bun", body)
         support.make_stub(self.bin, "cargo", body)
 
-    def run_main(self, tests, path=None, timeout=60):
-        environ = {"TESTS": tests}
+    def bun_environ(self, path=None):
+        bun = self.bin / "bun" if path is None else path
+        if not bun.exists():
+            return {}
+        return {"BUN_PATH": str(bun), "BUN_SHA256": hashlib.sha256(bun.read_bytes()).hexdigest()}
+
+    def run_main(self, tests, path=None, timeout=60, environ=None):
+        environ = {"TESTS": tests, **(self.bun_environ() if environ is None else environ)}
         path = f"{self.bin}:/usr/bin:/bin" if path is None else path
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, {"PATH": path}), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -365,16 +372,61 @@ class RunTests(unittest.TestCase):
     def test_a_program_found_inside_the_repository_is_refused(self):
         self.stubs()
         tools = self.repo / "tools"
+        support.make_stub(tools, "cargo", f"echo ran >> '{self.log}'")
+        code, _, stderr = self.run_main(json.dumps([["cargo", "test", "--workspace"]]), path=f"{tools}:/usr/bin:/bin")
+        self.assertEqual(code, 2)
+        self.assertIn("inside the repository", stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_an_authenticated_bun_inside_the_repository_is_refused(self):
+        self.stubs()
+        tools = self.repo / "tools"
         support.make_stub(tools, "bun", f"echo ran >> '{self.log}'")
-        code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), path=f"{tools}:/usr/bin:/bin")
+        code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), environ=self.bun_environ(tools / "bun"))
         self.assertEqual(code, 2)
         self.assertIn("inside the repository", stderr)
         self.assertFalse(self.log.exists())
 
     def test_a_missing_program_is_refused(self):
-        code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), path="/nonexistent")
+        code, _, stderr = self.run_main(json.dumps([["cargo", "test", "--workspace"]]), path="/nonexistent")
         self.assertEqual(code, 2)
         self.assertIn("not on PATH", stderr)
+
+    def test_a_different_bun_added_to_path_is_never_run(self):
+        self.stubs()
+        injected = self.base / "injected"
+        support.make_stub(injected, "bun", f"echo injected >> '{self.log}'")
+        code, _, _ = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), path=f"{injected}:{self.bin}:/usr/bin:/bin")
+        self.assertEqual(code, 0)
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, ["test", "a.test.ts", str(self.repo)])
+
+    def test_bun_tests_without_the_authenticated_bun_run_nothing(self):
+        self.stubs()
+        for environ in ({}, {"BUN_PATH": str(self.bin / "bun")}, {"BUN_PATH": "bun", "BUN_SHA256": "0" * 64}):
+            with self.subTest(environ=environ):
+                code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), environ=environ)
+                self.assertEqual(code, 2)
+                self.assertIn("refused", stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse(self.results.exists())
+
+    def test_a_bun_that_differs_from_the_authenticated_digest_runs_nothing(self):
+        self.stubs()
+        environ = {"BUN_PATH": str(self.bin / "bun"), "BUN_SHA256": "0" * 64}
+        code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"]]), environ=environ)
+        self.assertEqual(code, 2)
+        self.assertIn("not the authenticated", stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_a_bun_replaced_between_entries_stops_the_run(self):
+        support.make_stub(self.bin, "bun", f"echo ran >> '{self.log}'\necho '# replaced' >> '{self.bin / 'bun'}'")
+        environ = self.bun_environ()
+        code, _, stderr = self.run_main(json.dumps([["bun", "test", "a.test.ts"], ["bun", "test", "pkg/b.test.ts"]]), environ=environ)
+        self.assertEqual(code, 2)
+        self.assertIn("not the authenticated", stderr)
+        self.assertEqual(self.log.read_text(encoding="utf-8").splitlines(), ["ran"])
+        self.assertFalse(self.results.exists())
 
     def test_a_hung_test_is_killed_and_recorded(self):
         support.make_stub(self.bin, "bun", "sleep 30")

@@ -134,11 +134,14 @@ def main(argv=None, environ=None):
         print("usage: setup_bun.py", file=sys.stderr)
         return 2
     required = ("BUN_VERSION", "RUNNER_TEMP", "GITHUB_PATH")
-    if any(not environment.get(name) for name in required):
+    if any(not environment.get(name) for name in (*required, "GITHUB_OUTPUT")):
         print("refused: Bun bootstrap runner inputs are missing", file=sys.stderr)
         return 2
     try:
-        setup_bun(*(environment[name] for name in required))
+        binary = setup_bun(*(environment[name] for name in required))
+        digest = sha256_file(binary)
+        with open(environment["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+            handle.write(f"path={binary}\nsha256={digest}\n")
     except (Refusal, OSError, zipfile.BadZipFile) as error:
         reason = str(error) if isinstance(error, Refusal) else "Bun bootstrap file operation failed"
         print(f"refused: {reason}", file=sys.stderr)

@@ -29,6 +29,13 @@ def verify(source, tag, commit):
         raise Refusal(f"tag {tag} points at {tagged}, expected {commit}")
 
 
+def verify_commit(source, commit):
+    require_match(COMMIT_PATTERN, commit, "commit")
+    head = git_output(source, "rev-parse", "HEAD")
+    if head != commit:
+        raise Refusal(f"HEAD is {head}, expected {commit}")
+
+
 def main(argv=None, environ=None):
     environ = os.environ if environ is None else environ
     arguments = sys.argv[1:] if argv is None else argv
@@ -36,11 +43,14 @@ def main(argv=None, environ=None):
         print("usage: verify_checkout.py SOURCE_DIR", file=sys.stderr)
         return 2
     try:
-        verify(arguments[0], environ.get("TAG"), environ.get("COMMIT"))
+        if environ.get("MODE") == "precheck":
+            verify_commit(arguments[0], environ.get("COMMIT"))
+        else:
+            verify(arguments[0], environ.get("TAG"), environ.get("COMMIT"))
     except Refusal as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
-    print("checkout matches the requested tag and commit")
+    print("checkout matches the requested commit")
     return 0
 
 
