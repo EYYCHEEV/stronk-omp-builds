@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from common import Refusal
+from common import Refusal, authenticated_bun, require_bun_unchanged
 
 MAX_JSON_CHARS = 49152
 MAX_ENTRIES = 128
@@ -191,7 +191,7 @@ def locate(program, root, label):
     return str(absolute)
 
 
-def plan(entries, root):
+def plan(entries, root, bun=None):
     executables = []
     for index, entry in enumerate(entries):
         label = f"tests[{index}]"
@@ -199,7 +199,14 @@ def plan(entries, root):
             resolve_inside(root, relative, label)
         for relative in entry.manifests:
             resolve_inside(root, relative, label, want_file_named="Cargo.toml")
-        executables.append(locate(entry.argv[0], root, label))
+        if entry.argv[0] != "bun":
+            executables.append(locate(entry.argv[0], root, label))
+        elif bun is None:
+            raise Refusal(f"{label}: bun tests need the authenticated Bun from BUN_PATH and BUN_SHA256")
+        elif bun.resolve() == root or root in bun.resolve().parents:
+            raise Refusal(f"{label}: authenticated Bun {bun} is inside the repository")
+        else:
+            executables.append(str(bun))
     return executables
 
 
@@ -233,12 +240,21 @@ def main(argv=None, environ=None):
         if not root.is_dir():
             raise Refusal(f"{args.repo} is not a directory")
         entries = parse_tests(environ.get("TESTS"))
-        executables = plan(entries, root)
+        bun = None
+        if any(entry.argv[0] == "bun" for entry in entries):
+            bun = authenticated_bun(environ)
+        executables = plan(entries, root, None if bun is None else bun[0])
     except Refusal as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return 2
     results = []
     for entry, executable in zip(entries, executables):
+        if entry.argv[0] == "bun":
+            try:
+                require_bun_unchanged(*bun)
+            except Refusal as refusal:
+                print(f"refused: {refusal}", file=sys.stderr)
+                return 2
         print(f"==> {' '.join(entry.argv)}", flush=True)
         code = run_entry(executable, entry.argv, root, args.timeout_seconds)
         print(f"==> exit {code}", flush=True)

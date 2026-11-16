@@ -1,12 +1,20 @@
 name: mac-build
-run-name: mac-build ${{ inputs.tag }}
+run-name: mac-build ${{ inputs.mode == 'precheck' && format('precheck {0} {1} {2}', inputs.commit, inputs.tests_sha256, inputs.dispatch_id) || inputs.tag }}
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: release builds, attests and uploads the binary; precheck only runs the tests at the commit
+        required: false
+        default: release
+        type: choice
+        options:
+          - release
+          - precheck
       tag:
-        description: Fork tag to build, stronk-omp-YYYYMMDDTHHMMSSZ-N
-        required: true
+        description: Fork tag to build, stronk-omp-YYYYMMDDTHHMMSSZ-N, release mode only
+        required: false
         type: string
       commit:
         description: Full 40 character lowercase commit the tag must point at
@@ -15,6 +23,14 @@ on:
       tests:
         description: JSON list of argv lists, each one bun test or cargo test with plain arguments
         required: true
+        type: string
+      tests_sha256:
+        description: sha256 of the tests input, precheck mode only
+        required: false
+        type: string
+      dispatch_id:
+        description: 32 lowercase hex characters, new for every dispatch, precheck mode only
+        required: false
         type: string
 
 permissions: {}
@@ -26,6 +42,7 @@ defaults:
 jobs:
   build:
     name: build darwin-arm64
+    if: ${{ inputs.mode == 'release' }}
     runs-on: macos-15
     timeout-minutes: 150
     permissions:
@@ -49,6 +66,9 @@ jobs:
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ inputs.commit }}
           TESTS: ${{ inputs.tests }}
+          MODE: ${{ inputs.mode }}
+          TESTS_SHA256: ${{ inputs.tests_sha256 }}
+          DISPATCH_ID: ${{ inputs.dispatch_id }}
         run: python3 builder/scripts/validate_inputs.py
 
       - name: Check out fork tag
@@ -70,6 +90,7 @@ jobs:
         run: python3 builder/scripts/source_pins.py --source src
 
       - name: Authenticate Bun release
+        id: bun
         env:
           BUN_VERSION: ${{ steps.pins.outputs.bun }}
         run: python3 builder/scripts/setup_bun.py
@@ -105,7 +126,15 @@ jobs:
       - name: Run tests
         env:
           TESTS: ${{ inputs.tests }}
+          BUN_PATH: ${{ steps.bun.outputs.path }}
+          BUN_SHA256: ${{ steps.bun.outputs.sha256 }}
         run: python3 builder/scripts/run_tests.py --repo src --results "$RUNNER_TEMP/test-results.json"
+
+      - name: Measure runtime
+        env:
+          BUN_PATH: ${{ steps.bun.outputs.path }}
+          BUN_SHA256: ${{ steps.bun.outputs.sha256 }}
+        run: python3 builder/scripts/probe_runtime.py --source src --output "$RUNNER_TEMP/runtime-probe.json"
 
       - name: Collect binary
         run: |
@@ -133,7 +162,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ inputs.commit }}
-        run: python3 builder/scripts/manifest.py write --source src --binary out/omp-darwin-arm64 --tests "$RUNNER_TEMP/test-results.json" --output out/build-manifest.json
+        run: python3 builder/scripts/manifest.py write --source src --binary out/omp-darwin-arm64 --tests "$RUNNER_TEMP/test-results.json" --probe "$RUNNER_TEMP/runtime-probe.json" --output out/build-manifest.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -151,6 +180,7 @@ jobs:
 
   attest:
     name: attest
+    if: ${{ inputs.mode == 'release' }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -183,3 +213,109 @@ jobs:
           subject-path: |
             artifact/omp-darwin-arm64
             artifact/build-manifest.json
+
+  precheck:
+    name: precheck darwin-arm64
+    if: ${{ inputs.mode == 'precheck' }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    env:
+      RUSTUP_AUTO_INSTALL: "0"
+      OMP_NATIVE_BUILD_BACKEND: cargo
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Check out builder
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          TESTS: ${{ inputs.tests }}
+          MODE: ${{ inputs.mode }}
+          TESTS_SHA256: ${{ inputs.tests_sha256 }}
+          DISPATCH_ID: ${{ inputs.dispatch_id }}
+        run: python3 builder/scripts/validate_inputs.py
+
+      - name: Check out fork commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: EYYCHEEV/oh-my-pi
+          ref: ${{ inputs.commit }}
+          path: src
+          persist-credentials: false
+
+      - name: Verify commit
+        env:
+          MODE: ${{ inputs.mode }}
+          COMMIT: ${{ inputs.commit }}
+        run: python3 builder/scripts/verify_checkout.py src
+
+      - name: Read source pins
+        id: pins
+        run: python3 builder/scripts/source_pins.py --source src
+
+      - name: Authenticate Bun release
+        id: bun
+        env:
+          BUN_VERSION: ${{ steps.pins.outputs.bun }}
+        run: python3 builder/scripts/setup_bun.py
+
+      - name: Install Rust toolchain
+        env:
+          CHANNEL: ${{ steps.pins.outputs.rust }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$CHANNEL" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$CHANNEL" >> "$GITHUB_ENV"
+          active="$(RUSTUP_TOOLCHAIN="$CHANNEL" rustup show active-toolchain)"
+          case "$active" in
+            "$CHANNEL"-aarch64-apple-darwin*) ;;
+            *)
+              echo "active toolchain is $active, source pins $CHANNEL" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install dependencies
+        working-directory: src
+        run: bun install --frozen-lockfile
+
+      - name: Build natives
+        working-directory: src
+        run: bun run build:native
+
+      - name: Run tests
+        env:
+          TESTS: ${{ inputs.tests }}
+          BUN_PATH: ${{ steps.bun.outputs.path }}
+          BUN_SHA256: ${{ steps.bun.outputs.sha256 }}
+        run: python3 builder/scripts/run_tests.py --repo src --results "$RUNNER_TEMP/test-results.json"
+
+      - name: Measure runtime
+        env:
+          BUN_PATH: ${{ steps.bun.outputs.path }}
+          BUN_SHA256: ${{ steps.bun.outputs.sha256 }}
+        run: python3 builder/scripts/probe_runtime.py --source src --output "$RUNNER_TEMP/runtime-probe.json"
+
+      - name: Write pre-check record
+        env:
+          COMMIT: ${{ inputs.commit }}
+          DISPATCH_ID: ${{ inputs.dispatch_id }}
+        run: python3 builder/scripts/manifest.py precheck --tests "$RUNNER_TEMP/test-results.json" --probe "$RUNNER_TEMP/runtime-probe.json" --output precheck.json
+
+      - name: Upload pre-check record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mac-precheck
+          path: precheck.json
+          if-no-files-found: error
+          retention-days: 7
