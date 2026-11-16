@@ -363,10 +363,30 @@ def check_document(document, text):
     return violations
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            texts = set()
+            keys = []
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue
+                text = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+                key = self.construct_object(key_node, deep=True)
+                if (text is not None and text in texts) or any(key == seen for seen in keys):
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping", node.start_mark, f"duplicate key {text or key!r}", key_node.start_mark
+                    )
+                if text is not None:
+                    texts.add(text)
+                keys.append(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def check(path):
     text = Path(path).read_text(encoding="utf-8")
     try:
-        document = yaml.safe_load(text)
+        document = yaml.load(text, Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         return [f"workflow is not valid YAML: {error}"]
     return check_document(document, text)

@@ -275,6 +275,22 @@ class CheckWorkflowTests(unittest.TestCase):
                     violations = check(self.write(yaml.safe_dump(document)))
                     self.assertTrue(any(f"job {job} keys are" in item for item in violations), violations)
 
+    def test_duplicate_and_ambiguously_typed_keys_are_refused(self):
+        self.assertIn("\non:\n", REAL)
+        self.assertIn("\ndefaults:\n", REAL)
+        self.assertTrue(REAL.endswith("\n"))
+        cases = {
+            "string and boolean on": REAL.replace("\non:\n", "\n!!str on:\n", 1) + "on:\n  push:\n",
+            "two spellings of on": REAL.replace("\non:\n", "\nOn:\n  push:\non:\n", 1),
+            "repeated defaults": REAL.replace("\ndefaults:\n", "\ndefaults:\n  run:\n    shell: python3 {0}\n\ndefaults:\n", 1),
+            "repeated job key": REAL.replace("\n    timeout-minutes:", "\n    timeout-minutes: 1\n    timeout-minutes:", 1),
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(text, REAL)
+                violations = check(self.write(text))
+                self.assertTrue(any("duplicate key" in item for item in violations), violations)
+
 
 if __name__ == "__main__":
     unittest.main()
